@@ -1,0 +1,30 @@
+# Data (see data/README.md for how to obtain)
+data/raw/
+data/processed/
+
+# Trained model artifacts (large binary files — track via Git LFS if you want to keep them)
+models/saved_models/*.keras
+models/saved_models/*.h5
+models/saved_models/*_history.csv
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store

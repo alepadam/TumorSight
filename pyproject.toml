@@ -1,0 +1,27 @@
+[project]
+name = "tumorsight"
+version = "0.1.0"
+description = "TumorSight — 4-class brain tumor MRI classification with a patient-level train/test split"
+requires-python = ">=3.10"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "UP"]
+ignore = ["E501"]  # line length handled by black
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = true
+disallow_untyped_defs = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
