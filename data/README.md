@@ -17,7 +17,14 @@ This keeps the repo small and respects each dataset's own distribution terms.
 ## 2. Br35H — no-tumor class
 
 - Source: https://www.kaggle.com/datasets/ahmedhamada0/brain-tumor-detection
-- Place "no tumor" images into `data/raw/br35h_no_tumor/`
+- **Important**: this is a binary tumor-*detection* dataset (not pre-labeled "no tumor"
+  by folder name), so it's structured as two folders:
+  - `yes/` — 1,500 tumor-positive images — **do not use these**; you already have
+    tumor-positive data (with actual tumor *type* labels) from Figshare, and mixing in
+    unlabeled-by-type positives here would just muddy your 3 tumor classes
+  - `no/` — 1,500 tumor-negative images — **these are what you want**
+- Copy only the contents of the `no/` folder into `data/raw/br35h_no_tumor/`. Leave
+  `yes/` out entirely — don't copy the whole dataset in.
 - These images do not have a natural patient ID; `data_utils.py` assigns each a unique
   synthetic ID so they still work with `GroupShuffleSplit` without being able to leak
   (since each one is its own group).

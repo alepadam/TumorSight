@@ -22,11 +22,13 @@ import pytest
 from src.data_utils import (
     SplitConfig,
     _decode_matlab_string,
+    _get_cjdata_group,
     assert_no_patient_leakage,
     build_metadata,
     build_tf_dataset,
     load_figshare_mat,
     patient_level_split,
+    validate_figshare_directory,
 )
 
 
@@ -114,6 +116,95 @@ def test_load_figshare_mat_decodes_pid_correctly(tmp_path):
     assert result["tumor_mask"].shape == (32, 32)
 
 
+def test_get_cjdata_group_missing_raises_clear_error_with_filename(tmp_path):
+    """Regression test for the vague-error problem: a .mat file with no
+    cjdata group at all should raise an error naming the actual file and
+    what keys WERE found, not a bare KeyError."""
+    bad_path = tmp_path / "invalid.mat"
+    with h5py.File(bad_path, "w") as f:
+        f.create_group("wrong_group")
+
+    with h5py.File(bad_path, "r") as f:
+        with pytest.raises(ValueError, match=r"invalid\.mat.*cjdata"):
+            _get_cjdata_group(f, bad_path)
+
+
+def test_get_cjdata_group_one_level_nested_is_supported(tmp_path):
+    """Some extraction/conversion tools may place cjdata one level below
+    the root — the one-level fallback search should still find it."""
+    nested_path = tmp_path / "nested.mat"
+    with h5py.File(nested_path, "w") as f:
+        container = f.create_group("container")
+        cjdata = container.create_group("cjdata")
+        cjdata.create_dataset("label", data=np.array([[2.0]]))
+
+    with h5py.File(nested_path, "r") as f:
+        result = _get_cjdata_group(f, nested_path)
+        assert "label" in result
+
+
+def test_load_figshare_mat_raises_clear_error_on_non_cheng_file(tmp_path):
+    """A structurally unrelated .mat file (valid HDF5, but not this dataset's
+    format) should fail with a message pointing at the actual cause, not a
+    generic KeyError several layers removed from what went wrong."""
+    unrelated_path = tmp_path / "unrelated.mat"
+    with h5py.File(unrelated_path, "w") as f:
+        f.create_dataset("some_other_field", data=np.array([1, 2, 3]))
+
+    with pytest.raises(ValueError, match="cjdata"):
+        load_figshare_mat(unrelated_path)
+
+
+def test_validate_figshare_directory_passes_on_good_files(tmp_path):
+    figshare_dir = tmp_path / "figshare"
+    figshare_dir.mkdir()
+    _write_synthetic_mat(figshare_dir / "p1.mat", label_code=1, patient_id="0001")
+    _write_synthetic_mat(figshare_dir / "p2.mat", label_code=2, patient_id="0002")
+
+    validate_figshare_directory(figshare_dir)  # should not raise
+
+
+def test_validate_figshare_directory_reports_bad_file_by_name(tmp_path):
+    figshare_dir = tmp_path / "figshare"
+    figshare_dir.mkdir()
+    _write_synthetic_mat(figshare_dir / "good.mat", label_code=1, patient_id="0001")
+    with h5py.File(figshare_dir / "bad.mat", "w") as f:
+        f.create_group("wrong_group")
+
+    with pytest.raises(ValueError, match="bad.mat"):
+        validate_figshare_directory(figshare_dir)
+
+
+def test_validate_figshare_directory_raises_on_empty_dir(tmp_path):
+    figshare_dir = tmp_path / "empty_figshare"
+    figshare_dir.mkdir()
+
+    with pytest.raises(ValueError, match="No .mat files found"):
+        validate_figshare_directory(figshare_dir)
+
+
+def test_build_metadata_scans_nested_directories(tmp_path):
+    """Regression test: if zip extraction produced an extra nested folder
+    (e.g. figshare_mat/brain_tumor_dataset/*.mat), build_metadata should
+    still find the files via rglob, not silently return zero rows."""
+    from PIL import Image
+
+    figshare_dir = tmp_path / "figshare_mat"
+    nested_dir = figshare_dir / "brain_tumor_dataset" / "part1"
+    nested_dir.mkdir(parents=True)
+    _write_synthetic_mat(nested_dir / "p1.mat", label_code=1, patient_id="0001")
+
+    br35h_dir = tmp_path / "br35h_no_tumor"
+    br35h_nested = br35h_dir / "no"
+    br35h_nested.mkdir(parents=True)
+    Image.new("L", (32, 32)).save(br35h_nested / "healthy1.jpg")
+
+    metadata = build_metadata(figshare_dir, br35h_dir, tmp_path / "metadata.csv")
+
+    assert len(metadata) == 2
+    assert set(metadata["label"]) == {"meningioma", "no_tumor"}
+
+
 def test_build_metadata_end_to_end(tmp_path):
     """Builds a tiny synthetic dataset (2 figshare patients with 2 slices
     each, 2 br35h no-tumor images) and verifies the full metadata pipeline,
@@ -197,7 +288,7 @@ def test_build_tf_dataset_raises_on_empty_split(tmp_path):
     br35h_dir.mkdir()
     Image.new("L", (32, 32)).save(br35h_dir / "healthy.jpg")
 
-    metadata = build_metadata(figshare_dir, br35h_dir, tmp_path / "metadata.csv")
+    metadata = build_metadata(figshare_dir, br35h_dir, tmp_path / "metadata.csv", validate=False)
     metadata["split"] = "train"  # force everything into train, nothing in test
 
     with pytest.raises(ValueError, match="No rows found"):
