@@ -25,40 +25,62 @@ def grad_cam(
     pred_index: int | None = None,
 ) -> np.ndarray:
     """
-    Computes a Grad-CAM heatmap for a single image.
+    Computes a Grad-CAM heatmap for a single image, for a model that is a plain
+    linear stack of layers (e.g. build_custom_cnn(), a Sequential model).
 
     Parameters
     ----------
-    model: a trained Keras model
+    model: a Keras model built as a linear stack of layers
     image: a single preprocessed image, shape (H, W, C) — NOT batched
-    last_conv_layer_name: name of the last convolutional layer to explain from.
-        For build_custom_cnn(), this is typically the last Conv2D layer's name.
-        For build_transfer_model() (DenseNet), pass the DenseNet sub-model's last
-        conv layer — e.g. "conv5_block16_concat" for DenseNet121.
+    last_conv_layer_name: name of the layer whose spatial output is explained
+        (see find_last_conv_layer_name()). For models with a NESTED pretrained
+        base such as build_transfer_model(), use grad_cam_transfer_model() instead.
     pred_index: which class to explain. Defaults to the model's top predicted class.
 
     Returns
     -------
-    A 2D heatmap, shape (H', W') matching the last conv layer's spatial size,
+    A 2D heatmap, shape (H', W') matching the target layer's spatial size,
     normalized to [0, 1]. Resize it to the input image size for overlay plotting.
-    """
-    image_batch = np.expand_dims(image, axis=0)
 
-    # Sequential models (e.g. build_custom_cnn) expose `.outputs` (a list) but
-    # not the singular `.output` property until built in a functional context —
-    # using `.outputs[0]` works for both Sequential and functional models.
-    grad_model = tf.keras.models.Model(
-        inputs=model.inputs,
-        outputs=[model.get_layer(last_conv_layer_name).output, model.outputs[0]],
-    )
+    Implementation note: the layers are replayed one by one inside a single
+    GradientTape rather than building a helper Model(inputs, [layer_output,
+    prediction]). The helper-model approach works on a freshly built model but
+    silently loses the gradient path (tape.gradient returns None) once a model
+    has been saved and reloaded with load_model() — which is exactly how the
+    notebooks use it. Replaying the layers eagerly does not depend on graph
+    connectivity, so it behaves the same for fresh and reloaded models.
+    """
+    layers_to_run = [
+        layer for layer in model.layers if not isinstance(layer, tf.keras.layers.InputLayer)
+    ]
+    layer_names = [layer.name for layer in layers_to_run]
+    if last_conv_layer_name not in layer_names:
+        raise ValueError(
+            f"Layer '{last_conv_layer_name}' not found in model. Available layers: {layer_names}"
+        )
+    target_index = layer_names.index(last_conv_layer_name)
+
+    image_batch = tf.convert_to_tensor(np.expand_dims(image, axis=0), dtype=tf.float32)
 
     with tf.GradientTape() as tape:
-        conv_output, predictions = grad_model(image_batch)
+        x = image_batch
+        conv_output = None
+        for i, layer in enumerate(layers_to_run):
+            x = layer(x)
+            if i == target_index:
+                conv_output = x
+                tape.watch(conv_output)
+        predictions = x
         if pred_index is None:
             pred_index = int(tf.argmax(predictions[0]))
         class_channel = predictions[:, pred_index]
 
     grads = tape.gradient(class_channel, conv_output)
+    if grads is None:
+        raise RuntimeError(
+            f"Could not compute gradients from layer '{last_conv_layer_name}' to the "
+            f"model output. This layer may not lie on the path to the prediction."
+        )
     pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
 
     conv_output = conv_output[0]

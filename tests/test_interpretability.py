@@ -11,6 +11,11 @@ module — both covered here so they can't silently regress:
    model's inputs via Model(inputs=..., outputs=...) — grad_cam_transfer_model()
    works around this by replaying the outer model's post-base layers manually
    inside a single GradientTape instead.
+3. A helper Model(inputs, [layer_output, prediction]) built from a model that was
+   saved and reloaded with load_model() silently loses the gradient path
+   (tape.gradient returns None). grad_cam() replays layers inside the tape
+   instead, and the tests below run it on saved-and-reloaded models, because
+   that is exactly how the notebooks use it.
 """
 
 import numpy as np
@@ -60,6 +65,31 @@ def test_grad_cam_respects_explicit_pred_index():
     for hm in (heatmap_class0, heatmap_class1):
         assert hm.min() >= 0.0
         assert hm.max() <= 1.0 + 1e-6
+
+
+def test_grad_cam_works_on_saved_and_reloaded_custom_cnn(tmp_path):
+    """Regression test: the notebooks load trained models from disk. Grad-CAM
+    must work on a reloaded model and match the fresh model's heatmap."""
+    model = build_custom_cnn(input_shape=(64, 64, 1), num_classes=4)
+    image = np.random.rand(64, 64, 1).astype("float32")
+    fresh_heatmap = grad_cam(model, image, find_last_conv_layer_name(model))
+
+    model_path = tmp_path / "cnn.keras"
+    model.save(model_path)
+    loaded = tf.keras.models.load_model(model_path)
+    loaded_heatmap = grad_cam(loaded, image, find_last_conv_layer_name(loaded))
+
+    assert loaded_heatmap.min() >= 0.0
+    assert loaded_heatmap.max() <= 1.0 + 1e-6
+    assert np.allclose(fresh_heatmap, loaded_heatmap, atol=1e-4)
+
+
+def test_grad_cam_raises_clear_error_for_unknown_layer():
+    model = build_custom_cnn(input_shape=(64, 64, 1), num_classes=4)
+    image = np.random.rand(64, 64, 1).astype("float32")
+
+    with pytest.raises(ValueError, match="not found in model"):
+        grad_cam(model, image, "layer_that_does_not_exist")
 
 
 def test_find_last_conv_layer_name_returns_a_real_layer():
@@ -118,6 +148,24 @@ def test_grad_cam_transfer_model_works_with_unfrozen_base():
     heatmap = grad_cam_transfer_model(model, image)
     assert heatmap.min() >= 0.0
     assert heatmap.max() <= 1.0 + 1e-6
+
+
+def test_grad_cam_transfer_model_works_on_saved_and_reloaded_model(tmp_path):
+    """Same reload regression, for the nested-DenseNet model."""
+    model = build_transfer_model(
+        input_shape=(64, 64, 3), num_classes=4, freeze_base=True, weights=None
+    )
+    image = np.random.rand(64, 64, 3).astype("float32")
+    fresh_heatmap = grad_cam_transfer_model(model, image)
+
+    model_path = tmp_path / "densenet.keras"
+    model.save(model_path)
+    loaded = tf.keras.models.load_model(model_path)
+    loaded_heatmap = grad_cam_transfer_model(loaded, image)
+
+    assert loaded_heatmap.min() >= 0.0
+    assert loaded_heatmap.max() <= 1.0 + 1e-6
+    assert np.allclose(fresh_heatmap, loaded_heatmap, atol=1e-3)
 
 
 def test_get_first_layer_filters_on_densenet_submodel():
